@@ -14,11 +14,11 @@ import (
 	"github.com/xdg-go/scram"
 )
 
-type  LocalSasl struct {
+type LocalSasl struct {
 	enabled             bool
 	timeout             time.Duration
 	localAuthenticators map[string]LocalSaslAuth
-	mechanism			string
+	mechanism           string
 }
 
 type LocalSaslParams struct {
@@ -55,7 +55,7 @@ func (p *LocalSasl) receiveAndSendSASLAuthV1(conn DeadlineReaderWriter, readKeyV
 	if localSaslAuth, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 1); err != nil {
 		return err
 	}
-	if ( p.mechanism == "PLAIN" ) {
+	if p.mechanism == "PLAIN" {
 		if err = p.receiveAndSendAuthV1(conn, localSaslAuth); err != nil {
 			return err
 		}
@@ -64,7 +64,7 @@ func (p *LocalSasl) receiveAndSendSASLAuthV1(conn DeadlineReaderWriter, readKeyV
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -73,7 +73,7 @@ func (p *LocalSasl) receiveAndSendSASLAuthV0(conn DeadlineReaderWriter, readKeyV
 	if localSaslAuth, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 0); err != nil {
 		return err
 	}
-	if ( p.mechanism == "PLAIN" ) {
+	if p.mechanism == "PLAIN" {
 		if err = p.receiveAndSendAuthV0(conn, localSaslAuth); err != nil {
 			return err
 		}
@@ -148,10 +148,9 @@ func (p *LocalSasl) receiveAndSendSaslV0orV1(conn DeadlineReaderWriter, keyVersi
 	if _, err := conn.Write(newResponseBuf); err != nil {
 		return nil, err
 	}
-	
+
 	return localSaslAuth, saslResult
 }
-
 
 func (p *LocalSasl) receiveAndSendAuthV1(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth) (err error) {
 	requestDeadline := time.Now().Add(p.timeout)
@@ -327,25 +326,25 @@ func (p *LocalSasl) receiveAndSendAuthV0(conn DeadlineReaderWriter, localSaslAut
 }
 
 //// SCRAM
-func getCredentialLookupFunc(localSaslAuth LocalSaslAuth, mechanism string) (func(string)(scram.StoredCredentials, error)) {
-	return func (username string) (sc scram.StoredCredentials, err error) {	
-		password, err := localSaslAuth.getCredential(username)	
+func getCredentialLookupFunc(localSaslAuth LocalSaslAuth, mechanism string) func(string) (scram.StoredCredentials, error) {
+	return func(username string) (sc scram.StoredCredentials, err error) {
+		password, err := localSaslAuth.getCredential(username)
 		if err != nil {
 			return scram.StoredCredentials{}, err
-		}		
+		}
 		var scramClient *scram.Client
 		switch mechanism {
-			case "SCRAM-SHA-256":
-				scramClient, err = SHA256.NewClient(username, password, "")
-				if err != nil {
-					return scram.StoredCredentials{}, err
-				}
-			case "SCRAM-SHA-512":
-				scramClient, err = SHA512.NewClient(username, password, "")
-				if err != nil {
-					return scram.StoredCredentials{}, err
-				}
-		}	
+		case "SCRAM-SHA-256":
+			scramClient, err = SHA256.NewClient(username, password, "")
+			if err != nil {
+				return scram.StoredCredentials{}, err
+			}
+		case "SCRAM-SHA-512":
+			scramClient, err = SHA512.NewClient(username, password, "")
+			if err != nil {
+				return scram.StoredCredentials{}, err
+			}
+		}
 		kf := scram.KeyFactors{Salt: "c2FsdFNBTFRzYWx0\n", Iters: 4096}
 		return scramClient.GetStoredCredentials(kf), nil
 	}
@@ -354,18 +353,18 @@ func getCredentialLookupFunc(localSaslAuth LocalSaslAuth, mechanism string) (fun
 func createScramConversation(mechanism string, cl scram.CredentialLookup) (conv *scram.ServerConversation, err error) {
 	var scramServer *scram.Server
 	switch mechanism {
-		case "SCRAM-SHA-256":
-			scramServer, err = SHA256.NewServer(cl)
-			if err != nil {
-				return nil, err
-			}
-		case "SCRAM-SHA-512":
-			scramServer, err = SHA512.NewServer(cl)
-			if err != nil {
-				return nil, err
-			}
-		default:
-			return nil, fmt.Errorf("invalid SCRAM specification provided: %s. Expected one of [\"SCRAM-SHA-256\",\"SCRAM-SHA-512\"]", mechanism)
+	case "SCRAM-SHA-256":
+		scramServer, err = SHA256.NewServer(cl)
+		if err != nil {
+			return nil, err
+		}
+	case "SCRAM-SHA-512":
+		scramServer, err = SHA512.NewServer(cl)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("invalid SCRAM specification provided: %s. Expected one of [\"SCRAM-SHA-256\",\"SCRAM-SHA-512\"]", mechanism)
 	}
 	conv = scramServer.NewConversation()
 	return conv, nil
@@ -377,12 +376,12 @@ func (p *LocalSasl) receiveAndSendAuthV0Scram(conn DeadlineReaderWriter, localSa
 	if err != nil {
 		return err
 	}
-	
+
 	conv, err := createScramConversation(p.mechanism, getCredentialLookupFunc(localSaslAuth, p.mechanism))
 	if err != nil {
 		return err
 	}
-	
+
 	for !conv.Done() {
 		payload, err := p.receiveSaslAuthenticateRequestV0(conn)
 		if err != nil {
@@ -448,7 +447,7 @@ func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSa
 			authBytes = saslAuthReqV2.SaslAuthBytes
 			correlationID = req.CorrelationID
 		}
-		
+
 		if resStr, err := conv.Step(string(authBytes)); err != nil {
 			return err
 		} else {
@@ -461,7 +460,7 @@ func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSa
 	return nil
 }
 
-func (p *LocalSasl) receiveSaslAuthenticateRequestV1(conn DeadlineReaderWriter )(payload []byte, apiVersion int16, err error){
+func (p *LocalSasl) receiveSaslAuthenticateRequestV1(conn DeadlineReaderWriter) (payload []byte, apiVersion int16, err error) {
 	keyVersionBuf := make([]byte, 8) // Size => int32 + ApiKey => int16 + ApiVersion => int16
 	if _, err = io.ReadFull(conn, keyVersionBuf); err != nil {
 		return nil, 0, err
@@ -487,88 +486,88 @@ func (p *LocalSasl) receiveSaslAuthenticateRequestV1(conn DeadlineReaderWriter )
 	return payload, requestKeyVersion.ApiVersion, nil
 }
 
-func (p *LocalSasl) sendSaslAuthenticateResponseV1(conn DeadlineReaderWriter, resStr string, CorrelationID int32, apiVersion int16, authErr error)(err error){
+func (p *LocalSasl) sendSaslAuthenticateResponseV1(conn DeadlineReaderWriter, resStr string, CorrelationID int32, apiVersion int16, authErr error) (err error) {
 	switch apiVersion {
-		case 0:
-			var saslAuthResV0 *protocol.SaslAuthenticateResponseV0
-			if authErr == nil {
-				// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
-				saslAuthResV0 = &protocol.SaslAuthenticateResponseV0{Err: protocol.ErrNoError, SaslAuthBytes: []byte(resStr)}
-			} else {
-				errMsg := authErr.Error()
-				saslAuthResV0 = &protocol.SaslAuthenticateResponseV0{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0)}
-			}
-			newResponseBuf, err := protocol.Encode(saslAuthResV0)
-			if err != nil {
-				return err
-			}
-			newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeader{Length: int32(len(newResponseBuf) + 4), CorrelationID: CorrelationID})
-			if err != nil {
-				return err
-			}
-			if _, err := conn.Write(newHeaderBuf); err != nil {
-				return err
-			}
-			if _, err := conn.Write(newResponseBuf); err != nil {
-				return err
-			}
-			return authErr
-		case 1:
-			var saslAuthResV1 *protocol.SaslAuthenticateResponseV1
-			if authErr == nil {
-				// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
-				saslAuthResV1 = &protocol.SaslAuthenticateResponseV1{Err: protocol.ErrNoError, SaslAuthBytes: make([]byte, 0), SessionLifetimeMs: 0}
-			} else {
-				errMsg := authErr.Error()
-				saslAuthResV1 = &protocol.SaslAuthenticateResponseV1{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0), SessionLifetimeMs: 0}
-			}
-			newResponseBuf, err := protocol.Encode(saslAuthResV1)
-			if err != nil {
-				return err
-			}
+	case 0:
+		var saslAuthResV0 *protocol.SaslAuthenticateResponseV0
+		if authErr == nil {
+			// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
+			saslAuthResV0 = &protocol.SaslAuthenticateResponseV0{Err: protocol.ErrNoError, SaslAuthBytes: []byte(resStr)}
+		} else {
+			errMsg := authErr.Error()
+			saslAuthResV0 = &protocol.SaslAuthenticateResponseV0{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0)}
+		}
+		newResponseBuf, err := protocol.Encode(saslAuthResV0)
+		if err != nil {
+			return err
+		}
+		newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeader{Length: int32(len(newResponseBuf) + 4), CorrelationID: CorrelationID})
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Write(newHeaderBuf); err != nil {
+			return err
+		}
+		if _, err := conn.Write(newResponseBuf); err != nil {
+			return err
+		}
+		return authErr
+	case 1:
+		var saslAuthResV1 *protocol.SaslAuthenticateResponseV1
+		if authErr == nil {
+			// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
+			saslAuthResV1 = &protocol.SaslAuthenticateResponseV1{Err: protocol.ErrNoError, SaslAuthBytes: []byte(resStr), SessionLifetimeMs: 0}
+		} else {
+			errMsg := authErr.Error()
+			saslAuthResV1 = &protocol.SaslAuthenticateResponseV1{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0), SessionLifetimeMs: 0}
+		}
+		newResponseBuf, err := protocol.Encode(saslAuthResV1)
+		if err != nil {
+			return err
+		}
 
-			newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeader{Length: int32(len(newResponseBuf) + 4), CorrelationID: CorrelationID})
-			if err != nil {
-				return err
-			}
-			if _, err := conn.Write(newHeaderBuf); err != nil {
-				return err
-			}
-			if _, err := conn.Write(newResponseBuf); err != nil {
-				return err
-			}
-			return authErr
-		case 2:
-			var saslAuthResV2 *protocol.SaslAuthenticateResponseV2
-			if authErr == nil {
-				// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
-				saslAuthResV2 = &protocol.SaslAuthenticateResponseV2{Err: protocol.ErrNoError, SaslAuthBytes: []byte(resStr), SessionLifetimeMs: 0}
-			} else {
-				errMsg := authErr.Error()
-				saslAuthResV2 = &protocol.SaslAuthenticateResponseV2{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0), SessionLifetimeMs: 0}
-			}
-			newResponseBuf, err := protocol.Encode(saslAuthResV2)
-			if err != nil {
-				return err
-			}
-			// 2 (Length) + 2 (CorrelationID) + 1 (empty TaggedFields)
-			newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeaderV1{Length: int32(len(newResponseBuf) + 5), CorrelationID: CorrelationID})
-			if err != nil {
-				return err
-			}
-			if _, err := conn.Write(newHeaderBuf); err != nil {
-				return err
-			}
-			if _, err := conn.Write(newResponseBuf); err != nil {
-				return err
-			}
-			return nil
-		default:
-			return errors.Errorf("SaslAuthenticate version 0,1 or 2 is expected, apiVersion %d", apiVersion)
+		newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeader{Length: int32(len(newResponseBuf) + 4), CorrelationID: CorrelationID})
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Write(newHeaderBuf); err != nil {
+			return err
+		}
+		if _, err := conn.Write(newResponseBuf); err != nil {
+			return err
+		}
+		return authErr
+	case 2:
+		var saslAuthResV2 *protocol.SaslAuthenticateResponseV2
+		if authErr == nil {
+			// Length of SaslAuthBytes !=0 for OAUTHBEARER causes that java SaslClientAuthenticator in INTERMEDIATE state will sent SaslAuthenticate(36) second time
+			saslAuthResV2 = &protocol.SaslAuthenticateResponseV2{Err: protocol.ErrNoError, SaslAuthBytes: []byte(resStr), SessionLifetimeMs: 0}
+		} else {
+			errMsg := authErr.Error()
+			saslAuthResV2 = &protocol.SaslAuthenticateResponseV2{Err: protocol.ErrSASLAuthenticationFailed, ErrMsg: &errMsg, SaslAuthBytes: make([]byte, 0), SessionLifetimeMs: 0}
+		}
+		newResponseBuf, err := protocol.Encode(saslAuthResV2)
+		if err != nil {
+			return err
+		}
+		// 2 (Length) + 2 (CorrelationID) + 1 (empty TaggedFields)
+		newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeaderV1{Length: int32(len(newResponseBuf) + 5), CorrelationID: CorrelationID})
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Write(newHeaderBuf); err != nil {
+			return err
+		}
+		if _, err := conn.Write(newResponseBuf); err != nil {
+			return err
+		}
+		return nil
+	default:
+		return errors.Errorf("SaslAuthenticate version 0,1 or 2 is expected, apiVersion %d", apiVersion)
 	}
 }
 
-func (p *LocalSasl) receiveSaslAuthenticateRequestV0(conn DeadlineReaderWriter )(payload []byte, err error){
+func (p *LocalSasl) receiveSaslAuthenticateRequestV0(conn DeadlineReaderWriter) (payload []byte, err error) {
 	sizeBuf := make([]byte, 4) // Size => int32
 	if _, err = io.ReadFull(conn, sizeBuf); err != nil {
 		return nil, err
@@ -587,7 +586,7 @@ func (p *LocalSasl) receiveSaslAuthenticateRequestV0(conn DeadlineReaderWriter )
 	return saslAuthBytes, nil
 }
 
-func (p *LocalSasl) sendSaslAuthenticateResponseV0(conn DeadlineReaderWriter, authBytes []byte)(err error){
+func (p *LocalSasl) sendSaslAuthenticateResponseV0(conn DeadlineReaderWriter, authBytes []byte) (err error) {
 	header := make([]byte, 4) // int32 is 4 bytes
 	binary.BigEndian.PutUint32(header, uint32(len(authBytes)))
 	sendBytes := append(header, authBytes...)
