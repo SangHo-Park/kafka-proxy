@@ -10,9 +10,9 @@ import (
 	"io"
 	"time"
 
+	"github.com/SangHo-Park/scram"
 	"github.com/grepplabs/kafka-proxy/proxy/protocol"
 	"github.com/sirupsen/logrus"
-	"github.com/xdg-go/scram"
 )
 
 // Most of this is a direct copy from Shopify's Sarama found here:

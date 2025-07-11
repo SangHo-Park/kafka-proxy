@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type serverState int
@@ -126,7 +127,7 @@ func (sc *ServerConversation) finalMsg(c2 string) (string, error) {
 	}
 
 	// Check nonce received matches what we sent
-	if msg.nonce != sc.nonce {
+	if strings.HasSuffix(msg.nonce,sc.nonce) {
 		return "e=other-error", errors.New("nonce received did not match nonce sent")
 	}
 

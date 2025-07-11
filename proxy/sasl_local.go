@@ -7,11 +7,11 @@ import (
 	"io"
 	"time"
 
+	"github.com/SangHo-Park/scram"
 	"github.com/grepplabs/kafka-proxy/pkg/apis"
 	"github.com/grepplabs/kafka-proxy/proxy/protocol"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/xdg-go/scram"
 )
 
 type LocalSasl struct {
