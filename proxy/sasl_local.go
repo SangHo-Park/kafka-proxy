@@ -449,6 +449,7 @@ func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSa
 			correlationID = req.CorrelationID
 		}
 
+		logrus.Debugf("scram payload: %s", string(authBytes))
 		if resStr, err := conv.Step(string(authBytes)); err != nil {
 			return err
 		} else {
