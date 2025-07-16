@@ -4,7 +4,7 @@ cloud.google.com/go/compute/metadata
 # github.com/Azure/go-ntlmssp v0.0.0-20200615164410-66371956d46c
 ## explicit
 github.com/Azure/go-ntlmssp
-# github.com/SangHo-Park/scram v0.0.0-20250711065155-dca295a07af7
+# github.com/SangHo-Park/scram v0.0.0-20250711082541-e359671fdeae
 ## explicit; go 1.11
 github.com/SangHo-Park/scram
 # github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
