@@ -13,6 +13,7 @@ import (
 	sloglogrus "github.com/samber/slog-logrus/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"net"
 	"net/http"
@@ -217,6 +218,11 @@ func initFlags() {
 	Server.Flags().StringVar(&c.Log.LevelFieldName, "log-level-fieldname", "@level", "Log level fieldname for json format")
 	Server.Flags().StringVar(&c.Log.TimeFiledName, "log-time-fieldname", "@timestamp", "Time fieldname for json format")
 	Server.Flags().StringVar(&c.Log.MsgFiledName, "log-msg-fieldname", "@message", "Message fieldname for json format")
+
+	Server.Flags().StringVar(&c.Log.LogFileLocation, "log-location", "stdio", "Log file location.")
+	Server.Flags().IntVar(&c.Log.LogFileMaxSize, "log-file-max-size", 100, "Log file max size in MB.")
+	Server.Flags().IntVar(&c.Log.LogFileMaxBackups, "log-file-max-backups", 10, "Log file max backups.")
+	Server.Flags().IntVar(&c.Log.LogFileMaxAge, "log-file-max-age", 3, "Log file max age in days.")
 
 	// Connect through Socks5 or HTTP CONNECT to Kafka
 	Server.Flags().StringVar(&c.ForwardProxy.Url, "forward-proxy", "", "URL of the forward proxy. Supported schemas are socks5 and http")
@@ -523,6 +529,16 @@ func SetLogger() {
 	logrus.SetLevel(level)
 
 	slog.SetDefault(slog.New(sloglogrus.Option{Level: toSlogLevel(level), Logger: logrus.StandardLogger()}.NewLogrusHandler()))
+
+	if c.Log.LogFileLocation != "stdio" {
+		lumberjacLogger := &lumberjack.Logger{
+			Filename:   c.Log.LogFileLocation,
+			MaxSize:    c.Log.LogFileMaxSize,
+			MaxBackups: c.Log.LogFileMaxBackups,
+			MaxAge:     c.Log.LogFileMaxAge,
+		}
+		logrus.SetOutput(lumberjacLogger)
+	}
 }
 
 func toSlogLevel(level logrus.Level) slog.Level {

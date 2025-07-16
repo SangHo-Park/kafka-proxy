@@ -67,11 +67,15 @@ type Config struct {
 		Enabled       bool
 	}
 	Log struct {
-		Format         string
-		Level          string
-		LevelFieldName string
-		TimeFiledName  string
-		MsgFiledName   string
+		Format            string
+		Level             string
+		LevelFieldName    string
+		TimeFiledName     string
+		MsgFiledName      string
+		LogFileLocation   string
+		LogFileMaxSize    int
+		LogFileMaxBackups int
+		LogFileMaxAge     int
 	}
 	Proxy struct {
 		DefaultListenerIP         string
