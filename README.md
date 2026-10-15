@@ -134,7 +134,7 @@ You can launch a kafka-proxy container with auth-ldap plugin for trying it out w
             --auth-local-command string                            Path to authentication plugin binary
             --auth-local-enable                                    Enable local SASL/PLAIN authentication performed by listener - SASL handshake will not be passed to kafka brokers
             --auth-local-log-level string                          Log level of the auth plugin (default "trace")
-            --auth-local-mechanism string                          SASL mechanism used for local authentication: PLAIN or OAUTHBEARER (default "PLAIN")
+            --auth-local-mechanism string                          SASL mechanism used for local authentication: PLAIN or SCRAM or OAUTHBEARER (default "PLAIN")
             --auth-local-param stringArray                         Authentication plugin parameter
             --auth-local-timeout duration                          Authentication timeout (default 10s)
             --bootstrap-server-mapping stringArray                 Mapping of Kafka bootstrap server address to local address (host:port,host:port(,advhost:advport))
@@ -330,7 +330,26 @@ SASL authentication is performed by the proxy. SASL authentication is enabled on
                              --auth-local-param "--claim-sub=alice" \
                              --auth-local-param "--claim-sub=bob" \
                              --bootstrap-server-mapping "192.168.99.100:32400,127.0.0.1:32400"
-                             
+
+### Local SASL/SCRAM with multiple users example
+
+The SCRAM auth plugin supports multiple users through any of these options
+(they can also be combined):
+
+- a single user via `--username`/`--password`
+- one or more repeatable `--scram-credential username:password` parameters
+
+Multiple users via repeatable parameters:
+
+    make clean build plugin.auth-scram && build/kafka-proxy server \
+                             --auth-local-enable \
+                             --auth-local-command build/auth-user-scram \
+                             --auth-local-mechanism "SCRAM" \
+                             --auth-local-param "--scram-credential=alice:alice-secret" \
+                             --auth-local-param "--scram-credential=bob:bob-secret" \
+                             --bootstrap-server-mapping "192.168.99.100:32400,127.0.0.1:32400"
+
+
 ### Same client certificate check enabled example
 
 Validate that client certificate used by proxy client is exactly the same as client certificate in authentication initiated by proxy 

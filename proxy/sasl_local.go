@@ -18,7 +18,6 @@ type LocalSasl struct {
 	enabled             bool
 	timeout             time.Duration
 	localAuthenticators map[string]LocalSaslAuth
-	mechanism           string
 }
 
 type LocalSaslParams struct {
@@ -52,15 +51,16 @@ func NewLocalSasl(params LocalSaslParams) *LocalSasl {
 
 func (p *LocalSasl) receiveAndSendSASLAuthV1(conn DeadlineReaderWriter, readKeyVersionBuf []byte) (err error) {
 	var localSaslAuth LocalSaslAuth
-	if localSaslAuth, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 1); err != nil {
+	var mechanism string
+	if localSaslAuth, mechanism, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 1); err != nil {
 		return err
 	}
-	if p.mechanism == "PLAIN" {
-		if err = p.receiveAndSendAuthV1(conn, localSaslAuth); err != nil {
+	if mechanism == SASLSCRAM256 || mechanism == SASLSCRAM512 {
+		if err = p.receiveAndSendAuthV1Scram(conn, localSaslAuth, mechanism); err != nil {
 			return err
 		}
 	} else {
-		if err = p.receiveAndSendAuthV1Scram(conn, localSaslAuth); err != nil {
+		if err = p.receiveAndSendAuthV1(conn, localSaslAuth); err != nil {
 			return err
 		}
 	}
@@ -70,86 +70,86 @@ func (p *LocalSasl) receiveAndSendSASLAuthV1(conn DeadlineReaderWriter, readKeyV
 
 func (p *LocalSasl) receiveAndSendSASLAuthV0(conn DeadlineReaderWriter, readKeyVersionBuf []byte) (err error) {
 	var localSaslAuth LocalSaslAuth
-	if localSaslAuth, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 0); err != nil {
+	var mechanism string
+	if localSaslAuth, mechanism, err = p.receiveAndSendSaslV0orV1(conn, readKeyVersionBuf, 0); err != nil {
 		return err
 	}
-	if p.mechanism == "PLAIN" {
-		if err = p.receiveAndSendAuthV0(conn, localSaslAuth); err != nil {
+	if mechanism == SASLSCRAM256 || mechanism == SASLSCRAM512 {
+		if err = p.receiveAndSendAuthV0Scram(conn, localSaslAuth, mechanism); err != nil {
 			return err
 		}
 	} else {
-		if err = p.receiveAndSendAuthV0Scram(conn, localSaslAuth); err != nil {
+		if err = p.receiveAndSendAuthV0(conn, localSaslAuth); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (p *LocalSasl) receiveAndSendSaslV0orV1(conn DeadlineReaderWriter, keyVersionBuf []byte, version int16) (localSaslAuth LocalSaslAuth, err error) {
+func (p *LocalSasl) receiveAndSendSaslV0orV1(conn DeadlineReaderWriter, keyVersionBuf []byte, version int16) (localSaslAuth LocalSaslAuth, mechanism string, err error) {
 	requestDeadline := time.Now().Add(p.timeout)
 	err = conn.SetDeadline(requestDeadline)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if len(keyVersionBuf) != 8 {
-		return nil, errors.New("length of keyVersionBuf should be 8")
+		return nil, "", errors.New("length of keyVersionBuf should be 8")
 	}
 	// keyVersionBuf has already been read from connection
 	requestKeyVersion := &protocol.RequestKeyVersion{}
 	if err = protocol.Decode(keyVersionBuf, requestKeyVersion); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !(requestKeyVersion.ApiKey == 17 && requestKeyVersion.ApiVersion == version) {
-		return nil, fmt.Errorf("SaslHandshake version %d is expected, but got %d", version, requestKeyVersion.ApiVersion)
+		return nil, "", fmt.Errorf("SaslHandshake version %d is expected, but got %d", version, requestKeyVersion.ApiVersion)
 	}
 
 	if int32(requestKeyVersion.Length) > protocol.MaxRequestSize {
-		return nil, protocol.PacketDecodingError{Info: fmt.Sprintf("sasl handshake message of length %d too large", requestKeyVersion.Length)}
+		return nil, "", protocol.PacketDecodingError{Info: fmt.Sprintf("sasl handshake message of length %d too large", requestKeyVersion.Length)}
 	}
 
 	resp := make([]byte, int(requestKeyVersion.Length-4))
 	if _, err = io.ReadFull(conn, resp); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	payload := bytes.Join([][]byte{keyVersionBuf[4:], resp}, nil)
 
 	saslReqV0orV1 := &protocol.SaslHandshakeRequestV0orV1{Version: version}
 	req := &protocol.Request{Body: saslReqV0orV1}
 	if err = protocol.Decode(payload, req); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	var saslResult error
 	saslErr := protocol.ErrNoError
 	localSaslAuth = p.localAuthenticators[saslReqV0orV1.Mechanism]
-	p.mechanism = saslReqV0orV1.Mechanism
 	if localSaslAuth == nil {
 		mechanisms := make([]string, 0)
-		for mechanism := range p.localAuthenticators {
-			mechanisms = append(mechanisms, mechanism)
+		for configured := range p.localAuthenticators {
+			mechanisms = append(mechanisms, configured)
 		}
-		saslResult = fmt.Errorf("PLAIN or OAUTHBEARER mechanism expected, %v are configured, but got %s", mechanisms, saslReqV0orV1.Mechanism)
+		saslResult = fmt.Errorf("one of %v mechanisms expected, but got %s", mechanisms, saslReqV0orV1.Mechanism)
 		saslErr = protocol.ErrUnsupportedSASLMechanism
 	}
 
 	saslResV0 := &protocol.SaslHandshakeResponseV0orV1{Err: saslErr, EnabledMechanisms: []string{saslReqV0orV1.Mechanism}}
 	newResponseBuf, err := protocol.Encode(saslResV0)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	newHeaderBuf, err := protocol.Encode(&protocol.ResponseHeader{Length: int32(len(newResponseBuf) + 4), CorrelationID: req.CorrelationID})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := conn.Write(newHeaderBuf); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := conn.Write(newResponseBuf); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return localSaslAuth, saslResult
+	return localSaslAuth, saslReqV0orV1.Mechanism, saslResult
 }
 
 func (p *LocalSasl) receiveAndSendAuthV1(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth) (err error) {
@@ -370,14 +370,14 @@ func createScramConversation(mechanism string, cl scram.CredentialLookup) (conv 
 	return conv, nil
 }
 
-func (p *LocalSasl) receiveAndSendAuthV0Scram(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth) (err error) {
+func (p *LocalSasl) receiveAndSendAuthV0Scram(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth, mechanism string) (err error) {
 	requestDeadline := time.Now().Add(p.timeout)
 	err = conn.SetDeadline(requestDeadline)
 	if err != nil {
 		return err
 	}
 
-	conv, err := createScramConversation(p.mechanism, getCredentialLookupFunc(localSaslAuth, p.mechanism))
+	conv, err := createScramConversation(mechanism, getCredentialLookupFunc(localSaslAuth, mechanism))
 	if err != nil {
 		return err
 	}
@@ -401,14 +401,14 @@ func (p *LocalSasl) receiveAndSendAuthV0Scram(conn DeadlineReaderWriter, localSa
 	return nil
 }
 
-func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth) (err error) {
+func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSaslAuth LocalSaslAuth, mechanism string) (err error) {
 	requestDeadline := time.Now().Add(p.timeout)
 	err = conn.SetDeadline(requestDeadline)
 	if err != nil {
 		return err
 	}
 
-	conv, err := createScramConversation(p.mechanism, getCredentialLookupFunc(localSaslAuth, p.mechanism))
+	conv, err := createScramConversation(mechanism, getCredentialLookupFunc(localSaslAuth, mechanism))
 	if err != nil {
 		return err
 	}
@@ -450,13 +450,16 @@ func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSa
 		}
 
 		logrus.Debugf("scram payload: %s", string(authBytes))
-		if resStr, err := conv.Step(string(authBytes)); err != nil {
+		resStr, stepErr := conv.Step(string(authBytes))
+		if stepErr != nil {
+			// The real cause (e.g. unknown user) is returned for logging only, so
+			// the client cannot tell whether the user exists.
+			authFailed := fmt.Errorf("Authentication failed during authentication due to invalid credentials with SASL mechanism %s", mechanism)
+			_ = p.sendSaslAuthenticateResponseV1(conn, "", correlationID, apiVersion, authFailed)
+			return stepErr
+		}
+		if err = p.sendSaslAuthenticateResponseV1(conn, resStr, correlationID, apiVersion, nil); err != nil {
 			return err
-		} else {
-			err = p.sendSaslAuthenticateResponseV1(conn, resStr, correlationID, apiVersion, err)
-			if err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -563,7 +566,7 @@ func (p *LocalSasl) sendSaslAuthenticateResponseV1(conn DeadlineReaderWriter, re
 		if _, err := conn.Write(newResponseBuf); err != nil {
 			return err
 		}
-		return nil
+		return authErr
 	default:
 		return errors.Errorf("SaslAuthenticate version 0,1 or 2 is expected, apiVersion %d", apiVersion)
 	}
