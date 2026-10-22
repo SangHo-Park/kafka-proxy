@@ -92,6 +92,8 @@ type Config struct {
 		ListenerReadBufferSize    int // SO_RCVBUF
 		ListenerWriteBufferSize   int // SO_SNDBUF
 		ListenerKeepAlive         time.Duration
+		ShutdownGracePeriod       time.Duration // keep existing connections open for up to this long on shutdown
+		ShutdownHealthDelay       time.Duration // mark health unhealthy and wait this long before closing listeners
 
 		TLS struct {
 			Enable                   bool
@@ -295,6 +297,8 @@ func NewConfig() *Config {
 	c.Proxy.RequestBufferSize = 4096
 	c.Proxy.ResponseBufferSize = 4096
 	c.Proxy.ListenerKeepAlive = 60 * time.Second
+	c.Proxy.ShutdownGracePeriod = 0
+	c.Proxy.ShutdownHealthDelay = 0
 
 	return c
 }
@@ -381,6 +385,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Proxy.ListenerKeepAlive < 0 {
 		return errors.New("ListenerKeepAlive must be greater or equal 0")
+	}
+	if c.Proxy.ShutdownGracePeriod < 0 {
+		return errors.New("ShutdownGracePeriod must be greater or equal 0")
+	}
+	if c.Proxy.ShutdownHealthDelay < 0 {
+		return errors.New("ShutdownHealthDelay must be greater or equal 0")
 	}
 	if c.Proxy.TLS.Enable && (c.Proxy.TLS.ListenerKeyFile == "" || c.Proxy.TLS.ListenerCertFile == "") {
 		return errors.New("ListenerKeyFile and ListenerCertFile are required when Proxy TLS is enabled")

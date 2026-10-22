@@ -113,12 +113,27 @@ func copyError(readDesc, writeDesc string, readErr bool, err error) {
 }
 
 func copyThenClose(cfg ProcessorConfig, remote, local DeadlineReadWriteCloser, brokerAddress string, remoteDesc, localDesc string) {
+	// Close both sides even if a loop panics; otherwise the other loop can block
+	// forever and the connection is never released.
+	defer remote.Close()
+	defer local.Close()
 
 	processor := newProcessor(cfg, brokerAddress)
 
 	firstErr := make(chan error, 1)
 
-	go withRecover(func() {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Errorf("Recovered from %v", r)
+				select {
+				case firstErr <- fmt.Errorf("panic: %v", r):
+				default:
+				}
+				remote.Close()
+				local.Close()
+			}
+		}()
 		readErr, err := processor.RequestsLoop(remote, local)
 		select {
 		case firstErr <- err:
@@ -131,7 +146,7 @@ func copyThenClose(cfg ProcessorConfig, remote, local DeadlineReadWriteCloser, b
 			local.Close()
 		default:
 		}
-	})
+	}()
 
 	readErr, err := processor.ResponsesLoop(local, remote)
 	select {

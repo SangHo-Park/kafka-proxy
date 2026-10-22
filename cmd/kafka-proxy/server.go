@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -48,6 +49,11 @@ var (
 	bootstrapServersMapping = make([]string, 0)
 	externalServersMapping  = make([]string, 0)
 	dialAddressMapping      = make([]string, 0)
+
+	// healthy reports whether the health endpoint should return 200. It is set
+	// to false at the start of a graceful shutdown so load balancers stop
+	// routing new traffic before connections are drained.
+	healthy atomic.Bool
 )
 
 var Server = &cobra.Command{
@@ -105,6 +111,8 @@ func initFlags() {
 	Server.Flags().IntVar(&c.Proxy.ListenerReadBufferSize, "proxy-listener-read-buffer-size", 0, "Size of the operating system's receive buffer associated with the connection. If zero, system default is used")
 	Server.Flags().IntVar(&c.Proxy.ListenerWriteBufferSize, "proxy-listener-write-buffer-size", 0, "Sets the size of the operating system's transmit buffer associated with the connection. If zero, system default is used")
 	Server.Flags().DurationVar(&c.Proxy.ListenerKeepAlive, "proxy-listener-keep-alive", 60*time.Second, "Keep alive period for an active network connection. If zero, keep-alives are disabled")
+	Server.Flags().DurationVar(&c.Proxy.ShutdownHealthDelay, "shutdown-health-delay", 0, "On SIGINT/SIGTERM/SIGQUIT, mark the health endpoint unhealthy and wait this long (so load balancers stop routing) before closing listeners and draining. 0 skips the wait")
+	Server.Flags().DurationVar(&c.Proxy.ShutdownGracePeriod, "shutdown-grace-period", 0, "On SIGINT/SIGTERM/SIGQUIT, keep existing connections open for up to this long before force-closing them. 0 closes immediately")
 
 	Server.Flags().BoolVar(&c.Proxy.TLS.Enable, "proxy-listener-tls-enable", false, "Whether or not to use TLS listener")
 	Server.Flags().DurationVar(&c.Proxy.TLS.Refresh, "proxy-listener-tls-refresh", 0*time.Second, "Interval for refreshing server TLS certificates. If set to zero, the refresh watch is disabled")
@@ -233,6 +241,7 @@ func initFlags() {
 
 func Run(_ *cobra.Command, _ []string) {
 	logrus.Infof("Starting kafka-proxy version %s on platform %s/%s", config.Version, runtime.GOOS, runtime.GOARCH)
+	healthy.Store(true)
 
 	var localPasswordAuthenticator apis.PasswordAuthenticator
 	var localScramAuthenticator apis.ScramAuthenticator
@@ -418,24 +427,27 @@ func Run(_ *cobra.Command, _ []string) {
 	}
 
 	var g run.Group
+
+	// All active connections are stored in this variable.
+	connset := proxy.NewConnSet()
+	prometheus.MustRegister(proxy.NewCollector(connset))
+	listeners, err := proxy.NewListeners(c)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	connSrc, err := listeners.ListenInstances(c.Proxy.BootstrapServers)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	proxyClient, err := proxy.NewClient(connset, c, listeners.GetNetAddressMapping, localPasswordAuthenticator, localTokenAuthenticator, localScramAuthenticator, saslTokenProvider, gatewayTokenProvider, gatewayTokenInfo)
+	if err != nil {
+		logrus.Fatal(err)
+	}
 	{
-		// All active connections are stored in this variable.
-		connset := proxy.NewConnSet()
-		prometheus.MustRegister(proxy.NewCollector(connset))
-		listeners, err := proxy.NewListeners(c)
-		if err != nil {
-			logrus.Fatal(err)
-		}
-		connSrc, err := listeners.ListenInstances(c.Proxy.BootstrapServers)
-		if err != nil {
-			logrus.Fatal(err)
-		}
-		proxyClient, err := proxy.NewClient(connset, c, listeners.GetNetAddressMapping, localPasswordAuthenticator, localTokenAuthenticator, localScramAuthenticator, saslTokenProvider, gatewayTokenProvider, gatewayTokenInfo)
-		if err != nil {
-			logrus.Fatal(err)
-		}
 		g.Add(func() error {
 			logrus.Print("Ready for new connections")
+			// Run blocks until Close() is triggered below; it then drains active
+			// connections (up to Proxy.ShutdownGracePeriod) before returning.
 			return proxyClient.Run(connSrc)
 		}, func(error) {
 			proxyClient.Close()
@@ -444,11 +456,27 @@ func Run(_ *cobra.Command, _ []string) {
 	{
 		cancelInterrupt := make(chan struct{})
 		g.Add(func() error {
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+			sig := make(chan os.Signal, 1)
+			signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 			select {
-			case sig := <-c:
-				return fmt.Errorf("received signal %s", sig)
+			case s := <-sig:
+				logrus.Infof("Received signal %s, starting graceful shutdown", s)
+				// 1. Fail health checks so load balancers stop sending new traffic.
+				healthy.Store(false)
+				if delay := c.Proxy.ShutdownHealthDelay; delay > 0 {
+					logrus.Infof("Health endpoint marked unhealthy; waiting %s before closing listeners", delay)
+					select {
+					case <-time.After(delay):
+					case s2 := <-sig:
+						logrus.Infof("Received second signal %s, skipping health delay", s2)
+					}
+				}
+				// 2. Stop accepting new connections.
+				logrus.Info("Closing listeners")
+				listeners.Close()
+				// 3. Returning triggers proxyClient.Close(), which drains existing
+				//    connections (up to Proxy.ShutdownGracePeriod) before closing them.
+				return fmt.Errorf("received signal %s", s)
 			case <-cancelInterrupt:
 				return nil
 			}
@@ -481,7 +509,7 @@ func Run(_ *cobra.Command, _ []string) {
 		})
 	}
 
-	err := g.Run()
+	err = g.Run()
 	logrus.Info("Exit ", err)
 }
 
@@ -500,6 +528,11 @@ func NewHTTPHandler() http.Handler {
 	        </html>`))
 	})
 	m.HandleFunc(c.Http.HealthPath, func(w http.ResponseWriter, r *http.Request) {
+		if !healthy.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`Service Unavailable`))
+			return
+		}
 		_, _ = w.Write([]byte(`OK`))
 	})
 	m.Handle(c.Http.MetricsPath, promhttp.Handler())

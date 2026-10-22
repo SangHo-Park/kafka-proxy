@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +119,112 @@ func TestLocalSaslScramUnknownUserErrorMessage(t *testing.T) {
 		assert.NotContains(t, *authRes.ErrMsg, "mallory")
 	}
 	assert.Error(t, <-serverDone)
+}
+
+// A client-final message whose proof is longer than the hash size must be
+// rejected as a normal authentication failure instead of panicking.
+func TestLocalSaslScramRejectsOversizedProof(t *testing.T) {
+	localSasl := newTestLocalSaslScram()
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				serverDone <- fmt.Errorf("server panic: %v", r)
+			}
+			serverConn.Close()
+		}()
+		keyVersionBuf := make([]byte, 8)
+		_, err := io.ReadFull(serverConn, keyVersionBuf)
+		if err == nil {
+			err = localSasl.receiveAndSendSASLAuthV1(serverConn, keyVersionBuf)
+		}
+		serverDone <- err
+	}()
+
+	authErr, err := sendOversizedProof(clientConn)
+	assert.NoError(t, err)
+	assert.Equal(t, protocol.ErrSASLAuthenticationFailed, authErr)
+	serverErr := <-serverDone
+	if assert.Error(t, serverErr) {
+		assert.NotContains(t, serverErr.Error(), "server panic")
+	}
+}
+
+// The same attack through a proxied connection must still let copyThenClose
+// return, otherwise the connection blocks a graceful shutdown forever.
+func TestCopyThenCloseReturnsOnOversizedProof(t *testing.T) {
+	cfg := ProcessorConfig{LocalSasl: newTestLocalSaslScram(), AuthServer: &AuthServer{}}
+	clientConn, localConn := net.Pipe()
+	brokerConn, remoteConn := net.Pipe()
+	defer clientConn.Close()
+	defer brokerConn.Close()
+	_ = clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	done := make(chan struct{})
+	go func() {
+		copyThenClose(cfg, remoteConn, localConn, "broker", "broker", "local")
+		close(done)
+	}()
+
+	_, _ = sendOversizedProof(clientConn)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("copyThenClose did not return after the failed authentication")
+	}
+}
+
+// sendOversizedProof runs a SCRAM-SHA-256 exchange for alice whose final message
+// carries a 200-byte proof, and returns the error code of the final response.
+func sendOversizedProof(conn net.Conn) (protocol.KError, error) {
+	if err := writeTestRequest(conn, &protocol.Request{CorrelationID: 1, ClientID: "test",
+		Body: &protocol.SaslHandshakeRequestV0orV1{Version: 1, Mechanism: SASLSCRAM256}}); err != nil {
+		return 0, err
+	}
+	if _, err := readTestResponse(conn); err != nil {
+		return 0, err
+	}
+
+	if err := writeTestRequest(conn, &protocol.Request{CorrelationID: 2, ClientID: "test",
+		Body: &protocol.SaslAuthenticateRequestV0{SaslAuthBytes: []byte("n,,n=alice,r=clientnonce")}}); err != nil {
+		return 0, err
+	}
+	body, err := readTestResponse(conn)
+	if err != nil {
+		return 0, err
+	}
+	serverFirst := &protocol.SaslAuthenticateResponseV0{}
+	if err := protocol.Decode(body, serverFirst); err != nil {
+		return 0, err
+	}
+	var nonce string
+	for _, field := range strings.Split(string(serverFirst.SaslAuthBytes), ",") {
+		if strings.HasPrefix(field, "r=") {
+			nonce = strings.TrimPrefix(field, "r=")
+		}
+	}
+	if nonce == "" {
+		return 0, errors.Errorf("no nonce in server-first message %q", serverFirst.SaslAuthBytes)
+	}
+
+	proof := base64.StdEncoding.EncodeToString(make([]byte, 200))
+	if err := writeTestRequest(conn, &protocol.Request{CorrelationID: 3, ClientID: "test",
+		Body: &protocol.SaslAuthenticateRequestV0{SaslAuthBytes: []byte("c=biws,r=" + nonce + ",p=" + proof)}}); err != nil {
+		return 0, err
+	}
+	body, err = readTestResponse(conn)
+	if err != nil {
+		return 0, err
+	}
+	serverFinal := &protocol.SaslAuthenticateResponseV0{}
+	if err := protocol.Decode(body, serverFinal); err != nil {
+		return 0, err
+	}
+	return serverFinal.Err, nil
 }
 
 func runLocalScramAuth(localSasl *LocalSasl, mechanism, username, password string) (clientErr error, serverErr error) {

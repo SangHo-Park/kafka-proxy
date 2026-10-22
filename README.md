@@ -183,6 +183,8 @@ You can launch a kafka-proxy container with auth-ldap plugin for trying it out w
             --proxy-listener-crl-file string                       PEM encoded X509 CRLs file
             --proxy-listener-curve-preferences strings             List of curve preferences
             --proxy-listener-keep-alive duration                   Keep alive period for an active network connection. If zero, keep-alives are disabled (default 1m0s)
+            --shutdown-health-delay duration                       On SIGINT/SIGTERM/SIGQUIT, mark the health endpoint unhealthy and wait this long (so load balancers stop routing) before closing listeners and draining. 0 skips the wait
+            --shutdown-grace-period duration                       On SIGINT/SIGTERM/SIGQUIT, keep existing connections open for up to this long before force-closing them. 0 closes immediately
             --proxy-listener-key-file string                       PEM encoded file with private key for the server certificate
             --proxy-listener-key-password string                   Password to decrypt rsa private key
             --proxy-listener-read-buffer-size int                  Size of the operating system's receive buffer associated with the connection. If zero, system default is used
@@ -347,6 +349,23 @@ Multiple users via repeatable parameters:
                              --auth-local-mechanism "SCRAM" \
                              --auth-local-param "--scram-credential=alice:alice-secret" \
                              --auth-local-param "--scram-credential=bob:bob-secret" \
+                             --bootstrap-server-mapping "192.168.99.100:32400,127.0.0.1:32400"
+
+
+### Graceful shutdown
+
+On `SIGINT`/`SIGTERM`/`SIGQUIT` the proxy performs an ordered shutdown:
+
+1. The health endpoint (`--http-health-path`, default `/health`) starts returning `503`, so load balancers stop routing new traffic to this instance.
+2. The proxy waits `--shutdown-health-delay` so load balancers have time to notice the unhealthy state.
+3. The listening sockets are closed, so no new connections are accepted.
+4. Existing connections are kept for up to `--shutdown-grace-period` to finish in-flight work, then any still-open connections are force-closed.
+
+Both durations default to `0`, which preserves the previous behaviour (connections are closed immediately). When enabling draining, set the orchestrator's termination timeout (for example Kubernetes `terminationGracePeriodSeconds`) a bit higher than `shutdown-health-delay + shutdown-grace-period`, otherwise the process receives `SIGKILL` before draining completes.
+
+    build/kafka-proxy server \
+                             --shutdown-health-delay 10s \
+                             --shutdown-grace-period 30s \
                              --bootstrap-server-mapping "192.168.99.100:32400,127.0.0.1:32400"
 
 

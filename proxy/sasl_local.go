@@ -350,6 +350,17 @@ func getCredentialLookupFunc(localSaslAuth LocalSaslAuth, mechanism string) func
 	}
 }
 
+// scramStep turns a panic in the scram library into an error. The library
+// panics on malformed client input, e.g. a proof longer than the hash size.
+func scramStep(conv *scram.ServerConversation, msg string) (resp string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("scram conversation failed: %v", r)
+		}
+	}()
+	return conv.Step(msg)
+}
+
 func createScramConversation(mechanism string, cl scram.CredentialLookup) (conv *scram.ServerConversation, err error) {
 	var scramServer *scram.Server
 	switch mechanism {
@@ -389,7 +400,7 @@ func (p *LocalSasl) receiveAndSendAuthV0Scram(conn DeadlineReaderWriter, localSa
 		}
 
 		logrus.Debugf("scram payload: %s", string(payload))
-		if resStr, err := conv.Step(string(payload)); err != nil {
+		if resStr, err := scramStep(conv, string(payload)); err != nil {
 			return err
 		} else {
 			err = p.sendSaslAuthenticateResponseV0(conn, []byte(resStr))
@@ -450,7 +461,7 @@ func (p *LocalSasl) receiveAndSendAuthV1Scram(conn DeadlineReaderWriter, localSa
 		}
 
 		logrus.Debugf("scram payload: %s", string(authBytes))
-		resStr, stepErr := conv.Step(string(authBytes))
+		resStr, stepErr := scramStep(conv, string(authBytes))
 		if stepErr != nil {
 			// The real cause (e.g. unknown user) is returned for logging only, so
 			// the client cannot tell whether the user exists.

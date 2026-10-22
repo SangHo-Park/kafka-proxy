@@ -35,6 +35,7 @@ type Client struct {
 
 	stopRun  chan struct{}
 	stopOnce sync.Once
+	connWg   sync.WaitGroup // tracks active handleConn goroutines for graceful draining
 
 	saslAuthByProxy SASLAuthByProxy
 	authClient      *AuthClient
@@ -254,20 +255,48 @@ STOP:
 	for {
 		select {
 		case conn := <-connSrc:
-			go withRecover(func() { c.handleConn(conn) })
+			c.connWg.Add(1)
+			go withRecover(func() {
+				defer c.connWg.Done()
+				c.handleConn(conn)
+			})
 		case <-c.stopRun:
 			break STOP
 		}
 	}
 
-	logrus.Info("Closing connections")
-
-	if err := c.conns.Close(); err != nil {
-		logrus.Infof("closing client had error: %v", err)
-	}
+	c.drain()
 
 	logrus.Info("Proxy is stopped")
 	return nil
+}
+
+// drain waits up to Proxy.ShutdownGracePeriod for active connections to close
+// on their own, then force-closes whatever remains. A grace period of 0 keeps
+// the previous behaviour of closing all connections immediately.
+func (c *Client) drain() {
+	grace := c.config.Proxy.ShutdownGracePeriod
+	if grace > 0 {
+		logrus.Infof("Draining connections with grace period %s (active connections: %v)", grace, c.conns.Count())
+		done := make(chan struct{})
+		go func() {
+			c.connWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			logrus.Info("All connections drained before grace period elapsed")
+			return
+		case <-time.After(grace):
+			logrus.Info("Grace period elapsed; closing remaining connections")
+		}
+	}
+
+	logrus.Info("Closing connections")
+	if err := c.conns.Close(); err != nil {
+		logrus.Infof("closing client had error: %v", err)
+	}
+	c.connWg.Wait()
 }
 
 func (c *Client) Close() {

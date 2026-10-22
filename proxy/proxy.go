@@ -36,6 +36,37 @@ type Listeners struct {
 
 	brokerToListenerConfig map[string]*ListenerConfig
 	lock                   sync.RWMutex
+
+	// openListeners tracks the listening sockets so they can be closed on
+	// shutdown to stop accepting new connections. Guarded by lock.
+	openListeners []net.Listener
+	closed        bool
+}
+
+// trackListener records an opened listener so Close can shut it down later.
+// The caller must hold p.lock.
+func (p *Listeners) trackListener(l net.Listener) {
+	if p.closed {
+		_ = l.Close()
+		return
+	}
+	p.openListeners = append(p.openListeners, l)
+}
+
+// Close stops all listening sockets so that no new connections are accepted.
+// Existing (already accepted) connections are not affected.
+func (p *Listeners) Close() {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	if p.closed {
+		return
+	}
+	p.closed = true
+	for _, l := range p.openListeners {
+		if err := l.Close(); err != nil {
+			logrus.Infof("Error closing listener %s: %v", l.Addr().String(), err)
+		}
+	}
 }
 
 func NewListeners(cfg *config.Config) (*Listeners, error) {
@@ -214,6 +245,7 @@ func (p *Listeners) ListenDynamicInstance(brokerAddress string, brokerId int32) 
 	if err != nil {
 		return "", 0, err
 	}
+	p.trackListener(l)
 	port := l.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(p.defaultListenerIP, fmt.Sprint(port))
 
@@ -277,10 +309,11 @@ func (p *Listeners) ListenInstances(cfgs []config.ListenerConfig) (<-chan Conn, 
 	// allows multiple local addresses to point to the remote
 	for _, v := range cfgs {
 		cfg := FromListenerConfig(v)
-		_, err := listenInstance(p.connSrc, cfg, p.tcpConnOptions, p.listenFunc)
+		l, err := listenInstance(p.connSrc, cfg, p.tcpConnOptions, p.listenFunc)
 		if err != nil {
 			return nil, err
 		}
+		p.trackListener(l)
 	}
 	return p.connSrc, nil
 }
